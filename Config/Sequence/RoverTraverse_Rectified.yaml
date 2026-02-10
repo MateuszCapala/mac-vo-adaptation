@@ -1,0 +1,30 @@
+type: RoverStereo
+name: RoverTraverse_Rectified
+args:
+  root: /data/asrl/color-rectified-1280x960-s00
+  times: /data/asrl/rover-traverse-logs/image-times.txt
+  gps_topo: /data/asrl/rover-traverse-logs/gps-topocentric.txt
+  known_orientations: /data/asrl/rover-traverse-logs/known-orientations.txt
+  gt_pose: true
+  gps_flip_xy: false
+  gps_swap_xy: false
+  orient_interp: true
+
+  # Image naming
+  left_prefix: color-rectified-left-
+  right_prefix: color-rectified-right-
+  format: ppm
+
+  # Rectified calibration (1280x960)
+  camera:
+    fx: 968.999694824
+    fy: 968.999694824
+    cx: 635.139038086
+    cy: 463.537109375
+
+  bl: 0.239977002
+
+  # Resize inside dataset loader (keeps modularity)
+  resize:
+    width: 640
+    height: 480
