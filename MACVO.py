@@ -123,6 +123,10 @@ if __name__ == "__main__":
     
     Timer.setup(active=args.timing)
     fig_plt.default_mode = "image" if args.saveplt else "none"
+    if args.saveplt:
+        plots_dir = Path("plots")
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        fig_plt.default_save = plots_dir
 
     def onFrameFinished(frame: StereoFrame, system: MACVO, pb: ColoredTqdm):
         VisualizeRerunCallback(frame, system, pb)
