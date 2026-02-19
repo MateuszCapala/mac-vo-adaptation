@@ -1,0 +1,94 @@
+Model:
+  name: "FlowFormerCov_RoverStereo_FT"
+  stage: "rover"
+  suffix: "pseudo_flow"
+  gamma: 0.85
+  max_flow: 400
+  batch_size: 1
+  sum_freq: 100
+  val_freq: 5000000
+  image_size: [480, 640]
+  image_scale: 1
+  add_noise: false
+  cov_mask: false
+
+  critical_params: []
+  transformer: "latentcostformer"
+  restore_ckpt: "Model/MACVO_FrontendCov.pth"
+
+  latentcostformer:
+    pe: "linear"
+    dropout: 0.0
+    encoder_latent_dim: 256
+    query_latent_dim: 64
+    cost_latent_input_dim: 64
+    cost_latent_token_num: 8
+    cost_latent_dim: 128
+    arc_type: "transformer"
+    cost_heads_num: 1
+    pretrain: true
+    context_concat: false
+    encoder_depth: 3
+    feat_cross_attn: false
+    patch_size: 8
+    patch_embed: "single"
+    no_pe: false
+    gma: "GMA"
+    kernel_size: 9
+    rm_res: true
+    vert_c_dim: 64
+    cost_encoder_res: true
+    cnet: "twins"
+    fnet: "twins"
+    no_sc: false
+    only_global: false
+    add_flow_token: true
+    use_mlp: false
+    vertical_conv: false
+
+    decoder_depth: 12
+    critical_params: ["cost_heads_num",
+                      "vert_c_dim",
+                      "cnet",
+                      "pretrain",
+                      "add_flow_token",
+                      "encoder_depth",
+                      "gma",
+                      "cost_encoder_res"
+                      ]
+
+  clip: 1.0
+  num_steps: 20000
+
+  optimizer:
+    type: "AdamW"
+    args:
+      lr: 12.5e-5
+      weight_decay: 1.0e-5
+      eps: 1.0e-8
+
+  scheduler:
+    type: "OneCycleLR"
+    args:
+      total_steps: 20000
+      pct_start: 0.05
+      cycle_momentum: false
+      max_lr: 12.5e-5
+      anneal_strategy: "linear"
+
+  folderlength: null
+  autosave_freq: 2000
+  num_workers: 0
+  mixed_precision: false
+  datatype: fp32
+
+  seed: 1234
+  log_freq: 200
+
+Train:
+  data: !flatten_seq
+    - !include ../Sequence/Training_Dataset/RoverStereo_Train.yaml
+
+Evaluate:
+  data: !flatten_seq
+    - !include ../Sequence/Training_Dataset/RoverStereo_Train.yaml

@@ -69,7 +69,7 @@ Odometry:
     type: CUDAGraph_FlowFormerCovFrontend
     args:
       device: *device
-      weight: ./Model/MACVO_FrontendCov.pth
+      weight: ./Model/FlowFormerCov_RoverStereo_FT02-11-13-28-59/10000.pth #default ./Model/MACVO_FrontendCov.pth
       enc_dtype: fp16
       dec_dtype: bf16
       decoder_depth: 12

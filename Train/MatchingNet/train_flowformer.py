@@ -9,7 +9,7 @@ import torch.nn as nn
 from typing import get_args
 from pathlib import Path
 from torch.amp.grad_scaler import GradScaler
-from torch.utils.data import ConcatDataset, DataLoader
+from torch.utils.data import ConcatDataset, DataLoader, ChainDataset, IterableDataset
 from DataLoader import TrainDataset, DataFramePair, StereoFrame, CenterCropFrame, CastDataType, AddImageNoise, ScaleFrame
 from Train.MatchingNet.loss import sequence_loss, sequence_metric
 from Utility.Config import load_config, namespace_to_cfgnode
@@ -49,9 +49,9 @@ def train(modelcfg, cfg, loader: DataLoader[DataFramePair[StereoFrame]], eval_lo
     train_mode: T_TrainType = modelcfg.training_mode
     AssertLiteralType(train_mode, T_TrainType)
     
-    model = build_flowformer(modlecfg, torch.float32, torch.float32)
-    if modlecfg.restore_ckpt:
-        model.load_ddp_state_dict(torch.load(modlecfg.restore_ckpt, weights_only=True))
+    model = build_flowformer(modelcfg, torch.float32, torch.float32)
+    if modelcfg.restore_ckpt:
+        model.load_ddp_state_dict(torch.load(modelcfg.restore_ckpt, weights_only=True))
 
     model = nn.DataParallel(model)
     model.cuda()
@@ -65,7 +65,7 @@ def train(modelcfg, cfg, loader: DataLoader[DataFramePair[StereoFrame]], eval_lo
         optimizer,
         **vars(cfg.Model.scheduler.args)
     )
-    scaler = GradScaler(enabled=modlecfg.mixed_precision)
+    scaler = GradScaler(enabled=modelcfg.mixed_precision)
     model_ptr = model.module if isinstance(model, nn.DataParallel) else model
     match train_mode:
         case "flow":
@@ -77,8 +77,8 @@ def train(modelcfg, cfg, loader: DataLoader[DataFramePair[StereoFrame]], eval_lo
             for param in model_ptr.memory_decoder.cov_update.parameters():
                 param.requires_grad = True
 
-    if modlecfg.wandb:
-        wandb.init(project=modlecfg.name, config=modlecfg)
+    if modelcfg.wandb:
+        wandb.init(project=modelcfg.name, config=modelcfg)
         wandb.watch(model, log=None)
         
     total_steps = 0
@@ -86,33 +86,34 @@ def train(modelcfg, cfg, loader: DataLoader[DataFramePair[StereoFrame]], eval_lo
     while should_keep_training:
         frameData: DataFramePair[StereoFrame]
         for frameData in ColoredTqdm(loader):
-            assert frameData.cur.stereo.gt_flow   is not None
-            assert frameData.cur.stereo.flow_mask is not None
+            if frameData.cur.stereo.gt_flow is None or frameData.cur.stereo.flow_mask is None:
+                Logger.write("warn", "Missing gt_flow/flow_mask for batch, skipping.")
+                continue
             optimizer.zero_grad()
             img1, img2 = frameData.cur.stereo.imageL.cuda(), frameData.nxt.stereo.imageL.cuda()
             gt_flow = frameData.cur.stereo.gt_flow.cuda()
             flow_mask = frameData.cur.stereo.flow_mask.cuda()
             
             flow, cov = model(img1, img2)
-            loss, _ = sequence_loss(cfg=modlecfg, preds=flow, gt=gt_flow, flow_mask=flow_mask, cov_preds=cov)
+            loss, _ = sequence_loss(cfg=modelcfg, preds=flow, gt=gt_flow, flow_mask=flow_mask, cov_preds=cov)
             
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), modlecfg.clip)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), modelcfg.clip)
             scaler.step(optimizer)
             scheduler.step()
             lr = optimizer.param_groups[0]["lr"]
             scaler.update()
-            if total_steps % int(modlecfg.log_freq) == 0:
+            if total_steps % int(modelcfg.log_freq) == 0:
                 Logger.write("info", "Iter: %d, Loss: %.4f" % (total_steps, loss.item()))
-                if modlecfg.wandb:
+                if modelcfg.wandb:
                     metrics = merge_matrices([sequence_metric(modelcfg, flow, cov, gt_flow, flow_mask)[1]])
                     metrics["lr"] = lr
                     wandb.log(metrics)
                 
             total_steps += 1
 
-            if total_steps > modlecfg.num_steps:
+            if total_steps > modelcfg.num_steps:
                 should_keep_training = False
                 break
 
@@ -126,7 +127,7 @@ def train(modelcfg, cfg, loader: DataLoader[DataFramePair[StereoFrame]], eval_lo
                 else:
                     torch.save(model.state_dict(), PATH)
                 
-    PATH = "%s/%s/%d.pth" % (modlecfg.autosave_dir, modlecfg.name + modlecfg.time, total_steps)
+    PATH = "%s/%s/%d.pth" % (modelcfg.autosave_dir, modelcfg.name + modelcfg.time, total_steps)
     torch.save(model.state_dict(), PATH)
     
     
@@ -139,39 +140,62 @@ if __name__ == "__main__":
                         default="cov", help=f"Training mode: {get_args(T_TrainType)}")
     args = parser.parse_args()
     cfg, _ = load_config(Path(args.config))
-    modlecfg = namespace_to_cfgnode(cfg.Model)
-    modlecfg.update(vars(args))
+    modelcfg = namespace_to_cfgnode(cfg.Model)
+    modelcfg.update(vars(args))
     datacfg = cfg.Train
-    modlecfg.time = time.strftime("%m-%d-%H-%M-%S", time.localtime())
+    modelcfg.time = time.strftime("%m-%d-%H-%M-%S", time.localtime())
     
-    os.makedirs("%s/%s" % (args.autosave_dir, modlecfg.name + modlecfg.time), exist_ok=True)
-    torch.manual_seed(modlecfg.seed)
-    np.random.seed(modlecfg.seed)
-    transforms = [CenterCropFrame(dict(width=640, height=480)),
-                  CastDataType(dict(dtype=cfg.Model.datatype)),
-                  AddImageNoise(dict(stdv=5.0)),
-                  ScaleFrame(dict(scale_u=cfg.Model.image_scale, scale_v=cfg.Model.image_scale, interp='nearest'))]
+    os.makedirs("%s/%s" % (args.autosave_dir, modelcfg.name + modelcfg.time), exist_ok=True)
+    torch.manual_seed(modelcfg.seed)
+    np.random.seed(modelcfg.seed)
+    image_h, image_w = cfg.Model.image_size
+    transforms = [
+        CenterCropFrame(dict(width=image_w, height=image_h)),
+        CastDataType(dict(dtype=cfg.Model.datatype)),
+    ]
+    if getattr(cfg.Model, "add_noise", False):
+        transforms.append(AddImageNoise(dict(stdv=5.0)))
+    transforms.append(
+        ScaleFrame(dict(scale_u=cfg.Model.image_scale, scale_v=cfg.Model.image_scale, interp='nearest'))
+    )
     
-    traindatasets = TrainDataset[StereoFrame].mp_instantiation(datacfg.data, 0, -1, lambda cfg: cfg.type in {"TartanAir_NoIMU", "TartanAirv2_NoIMU"})
+    traindatasets = TrainDataset[StereoFrame].mp_instantiation(
+        datacfg.data,
+        0,
+        -1,
+        lambda cfg: cfg.type in {"TartanAir_NoIMU", "TartanAirv2_NoIMU", "RoverStereo"}
+    )
+    train_datasets = [
+        ds.transform_source(transforms)
+        for ds in traindatasets
+        if ds is not None
+    ]
+    if len(train_datasets) == 0:
+        raise RuntimeError("No training datasets instantiated. Check your Train config.")
+
+    if len(train_datasets) == 1:
+        train_dataset = train_datasets[0]
+    else:
+        # TrainDataset inherits IterableDataset, so use ChainDataset instead of ConcatDataset.
+        train_dataset = ChainDataset(train_datasets)
+
+    shuffle = not isinstance(train_dataset, IterableDataset)
+    num_workers = getattr(modelcfg, "num_workers", 4)
     trainloader = DataLoader[DataFramePair[StereoFrame]](
-        ConcatDataset([
-            ds.transform_source(transforms)
-            for ds in traindatasets
-            if ds is not None
-        ]),
-        batch_size=modlecfg.batch_size,
-        shuffle=True,
+        train_dataset,
+        batch_size=modelcfg.batch_size,
+        shuffle=shuffle,
         collate_fn=DataFramePair.collate,
         drop_last=True,
-        num_workers=4,
+        num_workers=num_workers,
     )
     
     if args.wandb:
         try:
             import wandb
-            wandb.init(project="FlowFormerCov", name = modlecfg.name,  config=modlecfg)
+            wandb.init(project="FlowFormerCov", name = modelcfg.name,  config=modelcfg)
         except ImportError:
             Logger.write("warn", "Wandb is not installed, disabling it.")
-            modlecfg.wandb = False
+            modelcfg.wandb = False
 
-    train(modlecfg, cfg, trainloader)
+    train(modelcfg, cfg, trainloader)

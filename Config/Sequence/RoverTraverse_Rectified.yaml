@@ -36,3 +36,16 @@ args:
   resize:
     width: 640
     height: 480
+
+  flow_dir: /data/asrl/flow
+  flow_mask_dir: /data/asrl/flow_mask
+  flow_prefix: "flow_"
+  flow_mask_prefix: "mask_"
+  flow_at_target_size: true
+
+  # Flow
+  flow_dir: /data/asrl/flow
+  flow_mask_dir: /data/asrl/flow_mask
+  flow_prefix: "flow_"
+  flow_mask_prefix: "mask_"
+  flow_at_target_size: true

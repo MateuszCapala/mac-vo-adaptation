@@ -1,0 +1,41 @@
+-   type: RoverStereo
+    name: RoverTraverse_Rectified
+    args:
+      root: /data/asrl/color-rectified-1280x960-s00
+      times: /data/asrl/rover-traverse-logs/image-times.txt
+      gps_latlon_sampled: /data/asrl/rover-traverse-logs/gps-latlngele-sampled.txt
+      known_orientations: /data/asrl/rover-traverse-logs/known-orientations.txt
+      gt_pose: true
+      gps_use_init_orient: true
+      gps_flip_xy: false
+      gps_swap_xy: false
+      gt_rotations:
+        - axis: y
+          angle_deg: -90
+        - axis: z
+          angle_deg: -90
+        - axis: z
+          angle_deg: 90
+      orient_interp: true
+
+      left_prefix: color-rectified-left-
+      right_prefix: color-rectified-right-
+      format: ppm
+
+      camera:
+        fx: 968.999694824
+        fy: 968.999694824
+        cx: 635.139038086
+        cy: 463.537109375
+
+      bl: 0.239977002
+
+      resize:
+        width: 640
+        height: 480
+
+      flow_dir: /data/asrl/flow
+      flow_mask_dir: /data/asrl/flow_mask
+      flow_prefix: "flow_"
+      flow_mask_prefix: "mask_"
+      flow_at_target_size: true

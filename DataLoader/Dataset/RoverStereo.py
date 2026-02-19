@@ -3,6 +3,7 @@ import torch
 import numpy as np
 import pypose as pp
 from pathlib import Path
+import re
 from types import SimpleNamespace
 from typing import Any
 from datetime import datetime
@@ -57,6 +58,20 @@ class RoverStereoSequence(SequenceBase[StereoFrame]):
                     Path(cfg.gps_topo), gps_flip_xy, gps_swap_xy, init_rot, gt_rotations
                 )
 
+        self.flow_dir: Path | None = None
+        self.flow_mask_dir: Path | None = None
+        self.flow_prefix = "flow_"
+        self.flow_mask_prefix = "mask_"
+        self.flow_at_target_size = bool(getattr(cfg, "flow_at_target_size", True))
+        if hasattr(cfg, "flow_dir") and cfg.flow_dir is not None:
+            self.flow_dir = Path(cfg.flow_dir)
+            self.flow_prefix = getattr(cfg, "flow_prefix", self.flow_prefix)
+        if hasattr(cfg, "flow_mask_dir") and cfg.flow_mask_dir is not None:
+            self.flow_mask_dir = Path(cfg.flow_mask_dir)
+            self.flow_mask_prefix = getattr(cfg, "flow_mask_prefix", self.flow_mask_prefix)
+
+        self._index_width = self._infer_index_width(self.left.file_names)
+
         self.baseline = float(cfg.bl)
         self.T_BS = pp.identity_SE3(1, dtype=torch.float32)
         scale_u = self.target_width / src_width
@@ -94,6 +109,20 @@ class RoverStereoSequence(SequenceBase[StereoFrame]):
             if gt_pose is None:
                 Logger.write("warn", f"Missing GPS GT for index {index}.")
 
+        gt_flow, flow_mask = self._load_flow_and_mask(index)
+        if gt_flow is not None and self._needs_resize and not self.flow_at_target_size:
+            gt_flow = torch.nn.functional.interpolate(
+                gt_flow, size=(self.target_height, self.target_width), mode="bilinear", align_corners=False
+            )
+            scale_u = self.target_width / self.left.image_shape[1]
+            scale_v = self.target_height / self.left.image_shape[0]
+            gt_flow[:, 0] /= scale_u
+            gt_flow[:, 1] /= scale_v
+        if flow_mask is not None and self._needs_resize and not self.flow_at_target_size:
+            flow_mask = torch.nn.functional.interpolate(
+                flow_mask, size=(self.target_height, self.target_width), mode="nearest"
+            )
+
         return StereoFrame(
             idx=[local_index],
             time_ns=[time_ns],
@@ -106,9 +135,72 @@ class RoverStereoSequence(SequenceBase[StereoFrame]):
                 time_ns=[time_ns],
                 imageL=imageL,
                 imageR=imageR,
+                gt_flow=gt_flow,
+                flow_mask=flow_mask,
             ),
             gt_pose=gt_pose,
         )
+
+    def _load_flow_and_mask(self, index: int) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        if self.flow_dir is None and self.flow_mask_dir is None:
+            return None, None
+
+        idx_str = self._format_index(index, self._index_width)
+        flow = None
+        mask = None
+
+        if self.flow_dir is not None:
+            flow_path = self.flow_dir / f"{self.flow_prefix}{idx_str}.npy"
+            if flow_path.exists():
+                flow = np.load(flow_path)
+                flow = self._normalize_flow(flow)
+            else:
+                Logger.write("warn", f"Missing flow file: {flow_path}")
+
+        if self.flow_mask_dir is not None:
+            mask_path = self.flow_mask_dir / f"{self.flow_mask_prefix}{idx_str}.npy"
+            if mask_path.exists():
+                mask = np.load(mask_path)
+                mask = self._normalize_mask(mask)
+            else:
+                Logger.write("warn", f"Missing flow mask file: {mask_path}")
+
+        return flow, mask
+
+    @staticmethod
+    def _normalize_flow(flow: np.ndarray) -> torch.Tensor:
+        if flow.ndim == 3 and flow.shape[2] == 2:
+            flow = np.transpose(flow, (2, 0, 1))
+        elif flow.ndim == 3 and flow.shape[0] == 2:
+            pass
+        else:
+            raise ValueError(f"Unsupported flow shape {flow.shape}, expected (H,W,2) or (2,H,W)")
+        flow_tensor = torch.tensor(flow, dtype=torch.float32).unsqueeze(0)
+        return flow_tensor
+
+    @staticmethod
+    def _normalize_mask(mask: np.ndarray) -> torch.Tensor:
+        if mask.ndim == 2:
+            mask = mask[None, ...]
+        elif mask.ndim == 3 and mask.shape[0] == 1:
+            pass
+        elif mask.ndim == 3 and mask.shape[2] == 1:
+            mask = np.transpose(mask, (2, 0, 1))
+        else:
+            raise ValueError(f"Unsupported mask shape {mask.shape}, expected (H,W) or (1,H,W)")
+        mask_tensor = torch.tensor(mask > 0, dtype=torch.bool).unsqueeze(0)
+        return mask_tensor
+
+    @staticmethod
+    def _infer_index_width(file_paths: list[Path]) -> int:
+        if not file_paths:
+            return 0
+        match = re.search(r"(\d+)", file_paths[0].stem)
+        return len(match.group(1)) if match else 0
+
+    @staticmethod
+    def _format_index(index: int, width: int) -> str:
+        return f"{index:0{width}d}" if width > 0 else str(index)
 
     @staticmethod
     def _load_timestamps(path: Path) -> dict[int, int]:
@@ -355,6 +447,11 @@ class RoverStereoSequence(SequenceBase[StereoFrame]):
                 or (hasattr(x, "axis") and hasattr(x, "angle_deg"))
                 for x in v
             ),
+            "flow_dir"   : lambda s: isinstance(s, str),
+            "flow_mask_dir": lambda s: isinstance(s, str),
+            "flow_prefix": lambda s: isinstance(s, str),
+            "flow_mask_prefix": lambda s: isinstance(s, str),
+            "flow_at_target_size": lambda b: isinstance(b, bool),
         }, allow_excessive_cfg=True)
 
         if hasattr(config, "resize"):
